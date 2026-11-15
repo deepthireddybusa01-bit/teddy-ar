@@ -5,7 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
 <title>Teddy AR</title>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #fdf3e7; font-family: system-ui, sans-serif; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; font-family: system-ui, sans-serif; }
+  canvas.main { position: fixed; inset: 0; z-index: 0; }
+  #hint, #moves, #arBtn, #credit { z-index: 5; }
   #hint { position: fixed; top: 12px; left: 0; right: 0; text-align: center; color: #8a4a66; font-size: 15px; pointer-events: none; }
   #arBtn { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); padding: 14px 28px;
            border: none; border-radius: 999px; background: #e86fa0; color: #fff; font-size: 17px; font-weight: 600;
@@ -23,7 +25,6 @@
   #credit { position: fixed; bottom: 4px; right: 8px; font-size: 10px; color: #b08aa0; }
   /* AR: everything see-through so the real camera view shows behind the teddy */
   :xr-overlay, html.ar, html.ar body { background: transparent !important; }
-  html.ar canvas.main { visibility: hidden; }
   html.ar #credit { display: none; }
   html.ar #hint { color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,.7); }
   #moves { position: fixed; top: 50%; transform: translateY(-50%); right: max(14px, calc(50% - 360px));
@@ -89,6 +90,7 @@ renderer.domElement.classList.add('main');
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
+const CREAM = new THREE.Color(0xfdf3e7); scene.background = CREAM;
 const camera = new THREE.PerspectiveCamera(35, innerWidth / innerHeight, 0.01, 50);
 camera.position.set(0.05, 0.7, 3.1);
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -729,7 +731,7 @@ async function setupAR() {
   reticle.matrixAutoUpdate = false; reticle.visible = false; scene.add(reticle);
   const enterAR = async () => {
     const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['local', 'hit-test'], optionalFeatures: ['dom-overlay', 'anchors'], domOverlay: { root: document.body } });
-    renderer.xr.setReferenceSpaceType('local'); renderer.setClearColor(0x000000, 0); await renderer.xr.setSession(session);
+    renderer.xr.setReferenceSpaceType('local'); scene.background = null; renderer.setClearColor(0x000000, 0); await renderer.xr.setSession(session);
     document.documentElement.classList.add('ar');
     root.visible = false; root.scale.setScalar(AR_HEIGHT / modelHeight);
     hint.textContent = 'Point at the floor, then tap to place teddy'; arBtn.style.display = 'none';
@@ -754,7 +756,7 @@ async function setupAR() {
       if (!placedOnce) { placedOnce = true; startShow(); } else { queue = []; startAction('hi'); }
       hint.textContent = 'Tap a floating bubble to see each movement \u00b7 tap the floor to move teddy';
     });
-    session.addEventListener('end', () => { document.documentElement.classList.remove('ar'); hitSource = null; reticle.visible = false; root.visible = true;
+    session.addEventListener('end', () => { document.documentElement.classList.remove('ar'); scene.background = CREAM; hitSource = null; reticle.visible = false; root.visible = true;
       root.position.set(0, 0, 0); root.rotation.set(0, 0, 0); root.scale.setScalar(1);
       arBtn.style.display = ''; document.getElementById('moves').style.display = ''; arButtons.visible = false;
       hint.textContent = 'Tap a button to see each movement · drag to look around'; });
