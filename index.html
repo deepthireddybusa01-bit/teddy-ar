@@ -31,6 +31,7 @@
   #moves button.on { background: radial-gradient(circle at 35% 30%, #ffd6e7 0%, #ff9cc4 60%, #f07aaa 100%);
                      box-shadow: 0 0 0 4px rgba(255,156,196,.35), 0 6px 16px rgba(232,111,160,.5); transform: scale(1.08); }
 </style>
+<script async src="https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.js"></script>
 <script type="importmap">
 { "imports": {
     "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
@@ -412,7 +413,9 @@ new GLTFLoader().load(MODEL_URL, (gltf) => {
   startShow();
   hint.textContent = 'Tap a button to see each movement · drag to look around';
   setupAR();
-}, undefined, (e) => { hint.textContent = 'Could not load teddy.glb'; console.error(e); });
+  preloadCardAR();
+}, (ev) => { if (ev.total) hint.textContent = 'Loading teddy… ' + Math.round(ev.loaded / ev.total * 100) + '%'; },
+   (e) => { hint.textContent = 'Could not load teddy – please check your internet and reload'; console.error(e); });
 
 // ---- glue face parts onto the real eyes (found by their eye-colour texture swatch) ----
 function glueFace() {
@@ -745,12 +748,34 @@ async function setupAR() {
 }
 
 // ============================ AR on the printed card (MindAR image tracking; works on iPhone + Android) ============================
+const MINDAR_URL = 'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js';
+let mindarModule = null;
+function preloadCardAR() {                       // warm everything up so "Start AR" is quick
+  if (mindarModule) return mindarModule;
+  mindarModule = import(MINDAR_URL);
+  fetch('targets.mind').catch(() => {});
+  return mindarModule;
+}
 const CARD_SCALE = 0.8;          // teddy height = 0.8 x card width (print the card bigger for a bigger teddy)
 let cardHolder = null, cardShown = false;
 async function startCardAR() {
-  if (cardAR || !model) return;
+  if (cardAR || starting) return;
+  if (!model) { hint.textContent = 'Teddy is still loading, one moment…'; return; }
+  starting = true; arBtn.disabled = true; arBtn.textContent = 'Preparing AR…';
+  hint.textContent = 'Preparing AR (first time can take a few seconds)…';
+  try { await startCardARInner(); }
+  catch (e) {
+    console.error(e);
+    const msg = String(e && (e.name || e.message) || e);
+    hint.textContent = /NotAllowed|Permission/i.test(msg) ? 'Camera permission was blocked – allow the camera in your browser settings and try again'
+                     : 'AR could not start (' + msg + '). Please reload and try again.';
+    document.getElementById('arContainer').style.display = 'none';
+  } finally { starting = false; arBtn.disabled = false; arBtn.textContent = 'Start AR'; }
+}
+let starting = false;
+async function startCardARInner() {
+  const { MindARThree } = await preloadCardAR();
   hint.textContent = 'Starting camera…';
-  const { MindARThree } = await import('https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js');
   const container = document.getElementById('arContainer'); container.style.display = 'block';
   const m = new MindARThree({ container, imageTargetSrc: 'targets.mind', uiLoading: 'yes', uiScanning: 'yes', uiError: 'yes',
                               filterMinCF: 0.0001, filterBeta: 0.001 });
@@ -765,6 +790,7 @@ async function startCardAR() {
   anchor.onTargetLost = () => { hint.textContent = 'Point your camera at the card'; };
   m.renderer.domElement.style.display = 'none';                  // we draw with our own renderer on top of the video
   await m.start();
+  hint.textContent = 'Point your camera at the card';
   cardAR = m; document.body.classList.add('card'); renderer.setClearColor(0x000000, 0);
   document.getElementById('exitCard').style.display = ''; hint.textContent = 'Point your camera at the card';
 }
