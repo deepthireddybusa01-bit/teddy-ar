@@ -683,7 +683,7 @@ MOVES.forEach(([name, emoji], i) => {
   spr.scale.setScalar(0.17);
   const hit = new THREE.Mesh(new THREE.SphereGeometry(0.095, 12, 8), new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }));
   hit.userData.move = name;
-  b.add(spr, hit); b.position.set(0.95, 0.95 - i * 0.22, 0.05);
+  b.add(spr, hit); b.position.set(-0.26 + i * 0.23, 0.1, 0.5);   // a row on the floor in front of teddy
   b.userData = { spr, texOff, texOn, name, base: b.position.y, phase: i * 0.9 };
   arButtons.add(b); bubbleHits.push(hit);
 });
