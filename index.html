@@ -413,7 +413,6 @@ new GLTFLoader().load(MODEL_URL, (gltf) => {
   startShow();
   hint.textContent = 'Tap a button to see each movement · drag to look around';
   setupAR();
-  preloadCardAR();
 }, (ev) => { if (ev.total) hint.textContent = 'Loading teddy… ' + Math.round(ev.loaded / ev.total * 100) + '%'; },
    (e) => { hint.textContent = 'Could not load teddy – please check your internet and reload'; console.error(e); });
 
@@ -710,8 +709,7 @@ renderer.domElement.addEventListener('click', (e) => {
 let reticle, hitSource = null, placedOnce = false;
 async function setupAR() {
   const floorOK = !!navigator.xr && await navigator.xr.isSessionSupported('immersive-ar').catch(() => false);
-  if (!floorOK) { arBtn.onclick = startCardAR; return; }          // iPhone (and others without WebXR): teddy on the card
-  document.getElementById('cardBtn').style.display = ''; document.getElementById('cardBtn').onclick = startCardAR;
+  if (!floorOK) { arBtn.disabled = true; arBtn.textContent = 'AR works in Chrome on Android'; return; }
   reticle = new THREE.Mesh(new THREE.RingGeometry(0.06, 0.08, 32).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffffff }));
   reticle.matrixAutoUpdate = false; reticle.visible = false; scene.add(reticle);
   arBtn.onclick = async () => {
