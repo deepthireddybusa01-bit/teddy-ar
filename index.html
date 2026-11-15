@@ -27,7 +27,8 @@
   :xr-overlay, html.ar, html.ar body { background: transparent !important; }
   html.ar #credit { display: none; }
   html.ar #hint { color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,.7); }
-  #moves { position: fixed; top: 50%; transform: translateY(-50%); right: max(14px, calc(50% - 360px));
+  #moves { display: none !important; }
+  #movesOld { position: fixed; top: 50%; transform: translateY(-50%); right: max(14px, calc(50% - 360px));
            display: flex; flex-direction: column; gap: 14px; }
   #moves button { width: 54px; height: 54px; border: none; border-radius: 50%; font-size: 26px; line-height: 54px; padding: 0;
                   background: radial-gradient(circle at 35% 30%, #ffffff 0%, #ffe6f0 60%, #ffd0e2 100%);
@@ -420,7 +421,7 @@ new GLTFLoader().load(MODEL_URL, (gltf) => {
   glueFace();
   bones.RightHand && bones.RightHand.add(keychain, can);
   startShow();
-  hint.textContent = 'Tap a button to see each movement · drag to look around';
+  hint.textContent = 'Tap a bubble to see each movement · drag to look around';
   setupAR();
 }, (ev) => { if (ev.total) hint.textContent = 'Loading teddy… ' + Math.round(ev.loaded / ev.total * 100) + '%'; },
    (e) => { hint.textContent = 'Could not load teddy – please check your internet and reload'; console.error(e); });
@@ -674,7 +675,7 @@ function bubbleTex(emoji, active) {
     g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(emoji, w / 2, h * 0.54);
   }, 256, 256);
 }
-const arButtons = new THREE.Group(); arButtons.visible = false; root.add(arButtons);
+const arButtons = new THREE.Group(); arButtons.visible = true; root.add(arButtons);   // shown in the preview and in AR
 const bubbleHits = [];
 MOVES.forEach(([name, emoji], i) => {
   const b = new THREE.Group();
@@ -683,7 +684,7 @@ MOVES.forEach(([name, emoji], i) => {
   spr.scale.setScalar(0.17);
   const hit = new THREE.Mesh(new THREE.SphereGeometry(0.095, 12, 8), new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }));
   hit.userData.move = name;
-  b.add(spr, hit); b.position.set(-0.26 + i * 0.23, 0.1, 0.5);   // a row on the floor in front of teddy
+  b.add(spr, hit); b.position.set(-0.33 + i * 0.22, 0.07, 0.78);   // a row on the floor in front of teddy
   b.userData = { spr, texOff, texOn, name, base: b.position.y, phase: i * 0.9 };
   arButtons.add(b); bubbleHits.push(hit);
 });
@@ -752,14 +753,14 @@ async function setupAR() {
       root.position.setFromMatrixPosition(reticle.matrix);
       const cam = new THREE.Vector3(); renderer.xr.getCamera().getWorldPosition(cam);
       root.rotation.y = Math.atan2(cam.x - root.position.x, cam.z - root.position.z);
-      root.visible = true; arButtons.visible = true;
+      root.visible = true;
       if (!placedOnce) { placedOnce = true; startShow(); } else { queue = []; startAction('hi'); }
       hint.textContent = 'Tap a floating bubble to see each movement \u00b7 tap the floor to move teddy';
     });
     session.addEventListener('end', () => { document.documentElement.classList.remove('ar'); scene.background = CREAM; hitSource = null; reticle.visible = false; root.visible = true;
       root.position.set(0, 0, 0); root.rotation.set(0, 0, 0); root.scale.setScalar(1);
-      arBtn.style.display = ''; document.getElementById('moves').style.display = ''; arButtons.visible = false;
-      hint.textContent = 'Tap a button to see each movement · drag to look around'; });
+      arBtn.style.display = ''; document.getElementById('moves').style.display = '';
+      hint.textContent = 'Tap a bubble to see each movement · drag to look around'; });
   };
   const tryEnterAR = () => enterAR().catch(e => { console.error(e); hint.textContent = 'AR could not start: ' + (e.message || e); });
   arBtn.disabled = false; arBtn.textContent = 'Start AR'; arBtn.onclick = tryEnterAR;
@@ -820,7 +821,7 @@ async function stopCardAR() {
   scene.add(root); root.position.set(0, 0, 0); root.rotation.set(0, 0, 0); root.scale.setScalar(1); root.visible = true;
   document.getElementById('arContainer').style.display = 'none'; document.getElementById('arContainer').innerHTML = '';
   document.body.classList.remove('card'); document.getElementById('exitCard').style.display = 'none';
-  arButtons.visible = false; hint.textContent = 'Tap a button to see each movement · drag to look around';
+  hint.textContent = 'Tap a bubble to see each movement · drag to look around';
 }
 document.getElementById('exitCard').onclick = stopCardAR;
 
