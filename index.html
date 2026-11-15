@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+<title>Teddy AR</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #fdf3e7; font-family: system-ui, sans-serif; }
+  #hint { position: fixed; top: 12px; left: 0; right: 0; text-align: center; color: #8a4a66; font-size: 15px; pointer-events: none; }
+  #arBtn { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); padding: 14px 28px;
+           border: none; border-radius: 999px; background: #e86fa0; color: #fff; font-size: 17px; font-weight: 600;
+           box-shadow: 0 4px 14px rgba(0,0,0,.2); }
+  #arBtn[disabled] { background: #bbb; }
+  #credit { position: fixed; bottom: 4px; right: 8px; font-size: 10px; color: #b08aa0; }
+  #moves { position: fixed; top: 50%; transform: translateY(-50%); right: max(14px, calc(50% - 360px));
+           display: flex; flex-direction: column; gap: 14px; }
+  #moves button { width: 54px; height: 54px; border: none; border-radius: 50%; font-size: 26px; line-height: 54px; padding: 0;
+                  background: radial-gradient(circle at 35% 30%, #ffffff 0%, #ffe6f0 60%, #ffd0e2 100%);
+                  box-shadow: 0 4px 12px rgba(232,111,160,.35), inset 0 -2px 4px rgba(232,111,160,.15); cursor: pointer;
+                  transition: transform .15s ease, box-shadow .2s ease; }
+  #moves button:active { transform: scale(0.9); }
+  #moves button.on { background: radial-gradient(circle at 35% 30%, #ffd6e7 0%, #ff9cc4 60%, #f07aaa 100%);
+                     box-shadow: 0 0 0 4px rgba(255,156,196,.35), 0 6px 16px rgba(232,111,160,.5); transform: scale(1.08); }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="hint">Loading teddy…</div>
+<div id="moves">
+  <button data-move="hi" title="Say hi" aria-label="Say hi">&#128075;</button>
+  <button data-move="keychain" title="Heart keychain" aria-label="Heart keychain">&#128150;</button>
+  <button data-move="kiss" title="Blow a kiss" aria-label="Blow a kiss">&#128139;</button>
+  <button data-move="water" title="Water the plant" aria-label="Water the plant">&#127793;</button>
+</div>
+<button id="arBtn" disabled>View in AR</button>
+<div id="credit">Pink teddy: original model · animations: Mixamo</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+// ============================ settings ============================
+const MODEL_URL = 'teddy.glb';
+const AR_HEIGHT = 0.35;                 // teddy height in metres in AR
+const FUR = '#f6a6c4';                  // fur colour behind the drawn face parts
+const WAVE_SPEED = 0.65, WAVE_REPEATS = 4;   // soft, slow "hi"
+const KISS_RELEASE = 0.45;              // fraction of the kiss clip where the kiss is thrown
+const POCKET = new THREE.Vector3(-0.215, 0.32, 0.13);   // bear's right hip pocket (model space, bear 1 unit tall)
+const SHOW = new THREE.Vector3(-0.2, 0.6, 0.18);      // where the paw holds the keychain up to show it
+const GIFT = { x: 0.55, z: 0.3, w: 0.26, h: 0.2, lidH: 0.055, dropFrom: 1.9, hold: 7 };
+
+// ============================ renderer / scene ============================
+const hint = document.getElementById('hint'), arBtn = document.getElementById('arBtn');
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+renderer.xr.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(35, innerWidth / innerHeight, 0.01, 50);
+camera.position.set(0.05, 0.7, 3.1);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0.05, 0.5, 0); controls.update();
+scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+scene.add(new THREE.HemisphereLight(0xffffff, 0xffd9e3, 0.8));
+const key = new THREE.DirectionalLight(0xfff4ea, 2.0); key.position.set(1.2, 2.5, 2.5); scene.add(key);
+const rim = new THREE.DirectionalLight(0xffc2d6, 1.3); rim.position.set(-2, 1.5, -2); scene.add(rim);
+
+const root = new THREE.Group(); scene.add(root);      // everything placed together in AR
+const clock = new THREE.Clock();
+
+// ============================ helpers ============================
+function canvasTex(draw, w = 256, h = 256) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+const heartPath = (g, x, y, s) => { g.beginPath(); g.moveTo(x, y + s * 0.35);
+  g.bezierCurveTo(x - s * 0.6, y - s * 0.05, x - s * 0.35, y - s * 0.55, x, y - s * 0.22);
+  g.bezierCurveTo(x + s * 0.35, y - s * 0.55, x + s * 0.6, y - s * 0.05, x, y + s * 0.35); };
+const ease = (x) => x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2;
+const easeOutBack = (x) => 1 + 2.2 * Math.pow(x - 1, 3) + 1.2 * Math.pow(x - 1, 2);
+const viewCam = () => renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+
+// ============================ face expressions ============================
+const furPatch = (g, w, h) => { const r = g.createRadialGradient(w/2, h/2, w*0.28, w/2, h/2, w*0.5);
+  r.addColorStop(0, FUR); r.addColorStop(1, FUR + '00'); g.fillStyle = r; g.fillRect(0, 0, w, h); };
+const eyeTex = {
+  closed: canvasTex((g, w, h) => { furPatch(g, w, h); g.strokeStyle = '#1a1014'; g.lineWidth = w * 0.09; g.lineCap = 'round';
+    g.beginPath(); g.arc(w/2, h*0.36, w*0.22, Math.PI*0.15, Math.PI*0.85); g.stroke(); }),
+  happy: canvasTex((g, w, h) => { furPatch(g, w, h); g.strokeStyle = '#1a1014'; g.lineWidth = w * 0.09; g.lineCap = 'round'; g.lineJoin = 'round';
+    g.beginPath(); g.moveTo(w*0.26, h*0.6); g.lineTo(w*0.5, h*0.36); g.lineTo(w*0.74, h*0.6); g.stroke(); }),
+};
+const blushTex = canvasTex((g, w, h) => { const r = g.createRadialGradient(w/2, h/2, 0, w/2, h/2, w/2);
+  r.addColorStop(0, 'rgba(240,70,120,0.8)'); r.addColorStop(1, 'rgba(240,70,120,0)'); g.fillStyle = r; g.fillRect(0, 0, w, h); });
+const facePlane = (tex) => { const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: tex,
+  transparent: true, depthWrite: false, opacity: 0, toneMapped: false, polygonOffset: true, polygonOffsetFactor: -2 })); m.renderOrder = 10; return m; };
+const eyeL = facePlane(eyeTex.happy), eyeR = facePlane(eyeTex.happy), blushL = facePlane(blushTex), blushR = facePlane(blushTex);
+
+// ============================ heart keychain ============================
+function makeKeychain() {
+  const g = new THREE.Group();
+  const gold = new THREE.MeshPhysicalMaterial({ color: 0xf2c46b, metalness: 1, roughness: 0.25 });
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.028, 0.0045, 12, 40), gold); ring.position.y = 0.0;
+  g.add(ring);
+  for (let i = 0; i < 4; i++) {                                   // little chain links
+    const l = new THREE.Mesh(new THREE.TorusGeometry(0.008, 0.0022, 8, 16), gold);
+    l.position.y = -0.03 - i * 0.012; l.rotation.y = i % 2 ? Math.PI / 2 : 0; g.add(l);
+  }
+  const s = new THREE.Shape(); const k = 0.045;                 // puffy 3D heart
+  s.moveTo(0, -k * 0.9);
+  s.bezierCurveTo(-k * 1.3, -k * 0.1, -k * 0.75, k * 0.95, 0, k * 0.35);
+  s.bezierCurveTo(k * 0.75, k * 0.95, k * 1.3, -k * 0.1, 0, -k * 0.9);
+  const hg = new THREE.ExtrudeGeometry(s, { depth: 0.012, bevelEnabled: true, bevelThickness: 0.012, bevelSize: 0.01, bevelSegments: 6, curveSegments: 24 });
+  hg.center();
+  const heart = new THREE.Mesh(hg, new THREE.MeshPhysicalMaterial({ color: 0xff3d7f, roughness: 0.15, clearcoat: 1, clearcoatRoughness: 0.05, sheen: 0.4, sheenColor: new THREE.Color(0xffc0d8) }));
+  heart.position.y = -0.105; g.add(heart);
+  const sparkle = new THREE.Mesh(new THREE.SphereGeometry(0.006, 8, 8), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+  sparkle.position.set(-0.018, -0.088, 0.03); g.add(sparkle);
+  g.userData.heart = heart;
+  g.visible = false;
+  return g;
+}
+const keychain = makeKeychain();
+
+// ============================ potted plant ============================
+function makePlant() {
+  const g = new THREE.Group();
+  const potPts = [[0, 0], [0.085, 0], [0.1, 0.02], [0.115, 0.17], [0.13, 0.18], [0.13, 0.205], [0.11, 0.205], [0.105, 0.19], [0, 0.19]]
+    .map(([x, y]) => new THREE.Vector2(x, y));
+  const pot = new THREE.Mesh(new THREE.LatheGeometry(potPts, 48), new THREE.MeshStandardMaterial({ color: 0xffd1df, roughness: 0.45 }));
+  const band = new THREE.Mesh(new THREE.CylinderGeometry(0.119, 0.112, 0.03, 48, 1, true), new THREE.MeshStandardMaterial({ color: 0xf28db2, roughness: 0.5, side: THREE.DoubleSide }));
+  band.position.y = 0.12;
+  const soil = new THREE.Mesh(new THREE.CircleGeometry(0.108, 32), new THREE.MeshStandardMaterial({ color: 0x5b3a29, roughness: 1 }));
+  soil.rotation.x = -Math.PI / 2; soil.position.y = 0.192;
+  g.add(pot, band, soil);
+  // leaves: curved teardrop blades
+  const leafShape = new THREE.Shape(); leafShape.moveTo(0, 0);
+  leafShape.bezierCurveTo(0.05, 0.06, 0.055, 0.2, 0, 0.3); leafShape.bezierCurveTo(-0.055, 0.2, -0.05, 0.06, 0, 0);
+  const greens = [0x3f9b4f, 0x4caf50, 0x5cbf60, 0x358a45, 0x66c46a];
+  const NL = 16;
+  for (let i = 0; i < NL; i++) {
+    const geo = new THREE.ShapeGeometry(leafShape, 16);
+    const p = geo.attributes.position;
+    for (let v = 0; v < p.count; v++) { const y = p.getY(v), x = p.getX(v); p.setZ(v, 0.55 * y * y - 3 * x * x); }   // bend + fold
+    geo.computeVertexNormals();
+    const leaf = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: greens[i % greens.length], roughness: 0.55, side: THREE.DoubleSide }));
+    const a = i / NL * Math.PI * 2 + (i % 2) * 0.2, tilt = 0.18 + (i % 4) * 0.2, sc = 0.75 + ((i * 7) % 5) * 0.12;
+    leaf.position.set(Math.sin(a) * 0.015, 0.19, Math.cos(a) * 0.015);
+    leaf.rotation.set(tilt, a, 0, 'YXZ'); leaf.scale.setScalar(sc);
+    leaf.userData.sway = Math.random() * 6;
+    g.add(leaf);
+  }
+  // flower that blooms after watering
+  const bloom = new THREE.Group();
+  const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.004, 0.005, 0.2, 8), new THREE.MeshStandardMaterial({ color: 0x3f9b4f }));
+  stem.position.y = 0.1; bloom.add(stem);
+  const head = new THREE.Group(); head.position.y = 0.2; bloom.add(head);
+  const petalMat = new THREE.MeshStandardMaterial({ color: 0xff8fc0, roughness: 0.45 });
+  for (let i = 0; i < 6; i++) { const a = i / 6 * Math.PI * 2;
+    const pe = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12), petalMat);
+    pe.scale.set(0.026, 0.014, 0.012); pe.position.set(Math.cos(a) * 0.026, Math.sin(a) * 0.026, 0); pe.rotation.z = a; head.add(pe); }
+  const ctr = new THREE.Mesh(new THREE.SphereGeometry(0.014, 16, 12), new THREE.MeshStandardMaterial({ color: 0xffd23f, roughness: 0.6 }));
+  ctr.position.z = 0.006; head.add(ctr);
+  bloom.position.set(0.0, 0.19, 0.02); bloom.scale.setScalar(0.001); bloom.visible = false;
+  g.add(bloom); g.userData.bloom = bloom;
+  g.position.set(-0.56, 0, 0.08);
+  return g;
+}
+const plant = makePlant();
+root.add(plant);
+
+// ============================ butterflies ============================
+function wingTex(c1, c2, spot) {
+  return canvasTex((g, w, h) => {
+    const grad = g.createRadialGradient(w * 0.1, h * 0.5, 4, w * 0.3, h * 0.5, w * 0.95);
+    grad.addColorStop(0, c1); grad.addColorStop(0.75, c2); grad.addColorStop(1, '#2a1830');
+    g.fillStyle = grad;
+    g.beginPath(); g.moveTo(w * 0.04, h * 0.48);                                  // fore wing
+    g.bezierCurveTo(w * 0.3, h * -0.05, w * 1.0, h * 0.0, w * 0.92, h * 0.4);
+    g.bezierCurveTo(w * 0.8, h * 0.5, w * 0.4, h * 0.52, w * 0.04, h * 0.5); g.fill();
+    g.beginPath(); g.moveTo(w * 0.04, h * 0.52);                                  // hind wing
+    g.bezierCurveTo(w * 0.5, h * 0.5, w * 0.8, h * 0.75, w * 0.6, h * 0.95);
+    g.bezierCurveTo(w * 0.35, h * 1.02, w * 0.12, h * 0.75, w * 0.04, h * 0.52); g.fill();
+    g.fillStyle = spot;
+    for (const [x, y, r] of [[0.7, 0.25, 0.06], [0.55, 0.3, 0.035], [0.45, 0.78, 0.045], [0.82, 0.32, 0.03]]) {
+      g.beginPath(); g.arc(w * x, h * y, w * r, 0, Math.PI * 2); g.fill();
+    }
+  }, 256, 256);
+}
+const BUTTERFLY_COLOURS = [
+  ['#7fd3ff', '#3a66e8', '#ffffff'],   // blue
+  ['#ffe066', '#ff8a1f', '#fff6d6'],   // yellow-orange
+  ['#ffc2e6', '#d43fa0', '#ffffff'],   // pink-magenta
+];
+function makeButterfly([c1, c2, spot], i) {
+  const g = new THREE.Group();
+  const tex = wingTex(c1, c2, spot);
+  const mat = new THREE.MeshStandardMaterial({ map: tex, transparent: true, side: THREE.DoubleSide, roughness: 0.6, alphaTest: 0.05 });
+  const wGeo = new THREE.PlaneGeometry(0.095, 0.095); wGeo.translate(0.0475, 0, 0);
+  const wl = new THREE.Mesh(wGeo, mat), wr = new THREE.Mesh(wGeo, mat);
+  wl.rotation.x = -Math.PI / 2; wr.rotation.x = -Math.PI / 2;
+  const hl = new THREE.Group(), hr = new THREE.Group(); hl.add(wl); hr.add(wr); hr.scale.x = -1;
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.0045, 0.035, 4, 8), new THREE.MeshStandardMaterial({ color: 0x2a1a22 }));
+  body.rotation.x = Math.PI / 2;
+  g.add(hl, hr, body);
+  g.userData = { hl, hr, phase: i * 2.1, r: 0.55 + i * 0.12, hgt: 0.55 + i * 0.25, speed: 0.45 + i * 0.12, dir: i % 2 ? -1 : 1 };
+  return g;
+}
+const butterflies = BUTTERFLY_COLOURS.map(makeButterfly);
+butterflies.forEach(b => root.add(b));
+function updateButterflies(t) {
+  for (const b of butterflies) {
+    const u = b.userData, a = u.dir * t * u.speed + u.phase;
+    const p = new THREE.Vector3(Math.cos(a) * u.r, u.hgt + Math.sin(t * 1.3 + u.phase) * 0.12, Math.sin(a) * u.r * 0.7 + 0.05);
+    const ahead = new THREE.Vector3(Math.cos(a + u.dir * 0.1) * u.r, p.y, Math.sin(a + u.dir * 0.1) * u.r * 0.7 + 0.05);
+    b.position.copy(p); b.lookAt(root.localToWorld(ahead.clone()));
+    const flap = Math.sin(t * 18 + u.phase) * 0.9 + 0.2;
+    u.hl.rotation.z = flap; u.hr.rotation.z = flap;
+  }
+}
+
+// ============================ gift box + love letter ============================
+const polkaTex = canvasTex((g, w, h) => { g.fillStyle = '#ff7fae'; g.fillRect(0, 0, w, h); g.fillStyle = '#fff3f8';
+  for (let y = 0; y < 6; y++) for (let x = 0; x < 6; x++) { g.beginPath(); g.arc((x + (y % 2) * 0.5) * w / 5.5 + 12, y * h / 5.5 + 12, w * 0.035, 0, Math.PI * 2); g.fill(); } });
+const letterTex = canvasTex((g, w, h) => {
+  g.fillStyle = '#fffaf2'; g.fillRect(0, 0, w, h);
+  g.strokeStyle = '#ff8fb8'; g.lineWidth = 14; g.setLineDash([22, 14]); g.strokeRect(18, 18, w - 36, h - 36); g.setLineDash([]);
+  g.fillStyle = '#e8336d'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.font = 'bold 150px "Comic Sans MS", "Chalkboard SE", "Segoe Print", cursive';
+  g.fillText('I LOVE YOU', w / 2, h * 0.2);
+  g.fillStyle = '#ff5c8d'; heartPath(g, w * 0.06, h * 0.2, 56); g.fill(); heartPath(g, w * 0.94, h * 0.2, 56); g.fill();
+  // a colourful flower: rainbow petals, leaves, smiling centre
+  const cx = w / 2, cy = h * 0.55;
+  g.strokeStyle = '#3fa34d'; g.lineWidth = 16; g.lineCap = 'round';
+  g.beginPath(); g.moveTo(cx, cy + 60); g.quadraticCurveTo(cx - 20, cy + 170, cx, h * 0.95); g.stroke();
+  g.fillStyle = '#5cc265'; g.beginPath(); g.ellipse(cx - 62, cy + 165, 52, 22, -0.5, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.ellipse(cx + 58, cy + 130, 52, 22, 0.5, 0, Math.PI * 2); g.fill();
+  const petals = ['#ff5c8d', '#ff9f43', '#ffd93d', '#6bd66b', '#4fc3f7', '#9b7bff', '#ff7ad9', '#ff6b6b'];
+  petals.forEach((c, i) => { const a = i / petals.length * Math.PI * 2;
+    const grad = g.createRadialGradient(cx + Math.cos(a) * 70, cy + Math.sin(a) * 70, 5, cx + Math.cos(a) * 70, cy + Math.sin(a) * 70, 52);
+    grad.addColorStop(0, '#ffffff'); grad.addColorStop(0.35, c); grad.addColorStop(1, c);
+    g.fillStyle = grad; g.beginPath(); g.ellipse(cx + Math.cos(a) * 72, cy + Math.sin(a) * 72, 52, 36, a, 0, Math.PI * 2); g.fill(); });
+  g.fillStyle = '#ffcf3f'; g.beginPath(); g.arc(cx, cy, 58, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#5d4037'; g.beginPath(); g.arc(cx - 18, cy - 10, 8, 0, Math.PI * 2); g.fill(); g.beginPath(); g.arc(cx + 18, cy - 10, 8, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = '#5d4037'; g.lineWidth = 6; g.beginPath(); g.arc(cx, cy + 6, 18, 0.15 * Math.PI, 0.85 * Math.PI); g.stroke();
+  g.fillStyle = 'rgba(255,110,150,0.65)'; g.beginPath(); g.arc(cx - 34, cy + 10, 10, 0, Math.PI * 2); g.fill(); g.beginPath(); g.arc(cx + 34, cy + 10, 10, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#ff7aa2'; heartPath(g, w * 0.18, h * 0.6, 44); g.fill(); heartPath(g, w * 0.82, h * 0.5, 40); g.fill();
+  g.fillStyle = '#ffa3c0'; heartPath(g, w * 0.84, h * 0.84, 34); g.fill(); heartPath(g, w * 0.15, h * 0.86, 30); g.fill();
+}, 1024, 720);
+function makeGift() {
+  const grp = new THREE.Group();
+  const boxMat = new THREE.MeshStandardMaterial({ map: polkaTex, roughness: 0.6, transparent: true });
+  const innerMat = new THREE.MeshStandardMaterial({ color: 0xffd0e3, roughness: 0.8, transparent: true });
+  const ribbonMat = new THREE.MeshStandardMaterial({ color: 0xd81b60, roughness: 0.35, metalness: 0.1, transparent: true, side: THREE.DoubleSide });
+  const { w, h, lidH } = GIFT, t = 0.008;                     // wall thickness
+  const plane = (pw, ph, mat) => new THREE.Mesh(new THREE.PlaneGeometry(pw, ph), mat);
+  // ---- hollow box: 4 walls (polka outside, plain pink inside), floor, rim, ribbon strips on the outside ----
+  const body = new THREE.Group();
+  for (let k = 0; k < 4; k++) {
+    const side = new THREE.Group(); side.rotation.y = k * Math.PI / 2;
+    const out = plane(w, h, boxMat); out.position.set(0, h / 2, w / 2);
+    const inn = plane(w - 2 * t, h - t, innerMat); inn.position.set(0, h / 2 + t / 2, w / 2 - t); inn.rotation.y = Math.PI;
+    const rim = new THREE.Mesh(new THREE.BoxGeometry(w, 0.004, t), boxMat); rim.position.set(0, h, w / 2 - t / 2);
+    const strip = plane(w * 0.18, h, ribbonMat); strip.position.set(0, h / 2, w / 2 + 0.0015);
+    side.add(out, inn, rim, strip); body.add(side);
+  }
+  const floorIn = plane(w - 2 * t, w - 2 * t, innerMat); floorIn.rotation.x = -Math.PI / 2; floorIn.position.y = t;
+  const floorOut = plane(w, w, boxMat); floorOut.rotation.x = Math.PI / 2; floorOut.position.y = 0.001;
+  body.add(floorIn, floorOut);
+  // ---- hollow lid on a hinge: top plate + 4 skirt walls (open underneath) ----
+  const hinge = new THREE.Group(); hinge.position.set(0, h, -w / 2 - 0.005);
+  const lid = new THREE.Group(); lid.position.set(0, 0, w / 2 + 0.005); hinge.add(lid);
+  const L = w + 0.02;
+  const top = new THREE.Mesh(new THREE.BoxGeometry(L, t, L), boxMat); top.position.y = lidH - t / 2;
+  const topIn = plane(L - 2 * t, L - 2 * t, innerMat); topIn.rotation.x = Math.PI / 2; topIn.position.y = lidH - t - 0.001;
+  lid.add(top, topIn);
+  for (let k = 0; k < 4; k++) {
+    const side = new THREE.Group(); side.rotation.y = k * Math.PI / 2;
+    const out = plane(L, lidH, boxMat); out.position.set(0, lidH / 2, L / 2);
+    const inn = plane(L - 2 * t, lidH - t, innerMat); inn.position.set(0, (lidH - t) / 2, L / 2 - t); inn.rotation.y = Math.PI;
+    const strip = plane(L * 0.18, lidH, ribbonMat); strip.position.set(0, lidH / 2, L / 2 + 0.0015);
+    side.add(out, inn, strip); lid.add(side);
+  }
+  const rTop1 = new THREE.Mesh(new THREE.BoxGeometry(L * 0.18, 0.003, L + 0.003), ribbonMat); rTop1.position.y = lidH + 0.0015;
+  const rTop2 = new THREE.Mesh(new THREE.BoxGeometry(L + 0.003, 0.003, L * 0.18), ribbonMat); rTop2.position.y = lidH + 0.0015;
+  const loopGeo = new THREE.TorusGeometry(w * 0.13, w * 0.035, 10, 24);
+  const loopL = new THREE.Mesh(loopGeo, ribbonMat), loopR = new THREE.Mesh(loopGeo, ribbonMat);
+  loopL.position.set(-w * 0.12, lidH + w * 0.09, 0); loopL.rotation.set(0, 0.4, 0.6);
+  loopR.position.set(w * 0.12, lidH + w * 0.09, 0); loopR.rotation.set(0, -0.4, -0.6);
+  const knot = new THREE.Mesh(new THREE.SphereGeometry(w * 0.06, 16, 12), ribbonMat); knot.position.y = lidH + w * 0.04;
+  lid.add(rTop1, rTop2, loopL, loopR, knot);
+  // ---- the letter starts tucked inside the box ----
+  const letter = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5 * 720 / 1024),
+    new THREE.MeshBasicMaterial({ map: letterTex, side: THREE.DoubleSide, transparent: true, toneMapped: false }));
+  letter.visible = false;
+  grp.add(body, hinge, letter);
+  grp.userData = { hinge, letter, mats: [boxMat, innerMat, ribbonMat, letter.material] };
+  grp.visible = false;
+  return grp;
+}
+const gift = makeGift(); root.add(gift);
+let giftState = null;
+function dropGift() {
+  gift.visible = true; gift.position.set(GIFT.x, GIFT.dropFrom, GIFT.z); gift.rotation.set(0, -0.35, 0.25); gift.scale.setScalar(1);
+  gift.userData.hinge.rotation.x = 0; gift.userData.letter.visible = false; gift.userData.mats.forEach(m => m.opacity = 1);
+  giftState = { phase: 'fall', t: 0, vy: 0 };
+}
+function resetGift() { gift.visible = false; giftState = null; }
+function updateGift(dt) {
+  if (!giftState) return;
+  const s = giftState; s.t += dt;
+  const { hinge, letter, mats } = gift.userData;
+  if (s.phase === 'fall') {
+    s.vy -= 7 * dt; gift.position.y += s.vy * dt; gift.rotation.z *= 0.96; gift.rotation.y += dt * 1.5;
+    if (gift.position.y <= 0) { gift.position.y = 0;
+      if (Math.abs(s.vy) > 0.6) s.vy = -s.vy * 0.32; else { s.phase = 'land'; s.t = 0; gift.rotation.z = 0; } }
+  } else if (s.phase === 'land') {
+    const sq = s.t < 0.18 ? 1 - 0.18 * Math.sin(s.t / 0.18 * Math.PI) : 1;
+    gift.scale.set(1 / Math.sqrt(sq), sq, 1 / Math.sqrt(sq));
+    gift.rotation.z = s.t > 0.2 ? Math.sin(s.t * 28) * 0.08 * Math.max(0, 1 - (s.t - 0.2) / 0.5) : 0;
+    if (s.t > 0.8) { s.phase = 'open'; s.t = 0; gift.scale.setScalar(1); gift.rotation.z = 0; }
+  } else if (s.phase === 'open') {
+    const p = Math.min(1, s.t / 0.6); hinge.rotation.x = -1.95 * easeOutBack(p);
+    if (s.t > 0.15 && !s.burst) { s.burst = true; const top = new THREE.Vector3(0, GIFT.h, 0); gift.localToWorld(top); spawnHearts(6, top); }
+    if (p >= 1) { s.phase = 'letter'; s.t = 0; letter.visible = true; }
+  } else if (s.phase === 'letter') {
+    const p = Math.min(1, s.t / 1.1);
+    letter.position.set(0, GIFT.h * 0.5 + easeOutBack(p) * 0.5 + Math.sin(s.t * 2) * 0.012, 0.02);
+    letter.scale.setScalar(0.15 + 0.85 * easeOutBack(p));
+    const cp = new THREE.Vector3(); viewCam().getWorldPosition(cp); letter.lookAt(cp); letter.rotateZ(Math.sin(s.t * 1.6) * 0.05);
+    if (s.t > GIFT.hold) { s.phase = 'fade'; s.t = 0; }
+  } else if (s.phase === 'fade') {
+    const o = Math.max(0, 1 - s.t); mats.forEach(m => m.opacity = o); gift.scale.setScalar(0.6 + 0.4 * o);
+    if (o === 0) resetGift();
+  }
+}
+
+// ============================ floating hearts ============================
+const heartTex = canvasTex((g, w, h) => { g.fillStyle = '#ff2d55'; heartPath(g, w / 2, h * 0.55, w * 0.9); g.fill();
+  g.fillStyle = 'rgba(255,255,255,0.55)'; g.beginPath(); g.ellipse(w * 0.33, h * 0.38, w * 0.07, h * 0.05, -0.6, 0, Math.PI * 2); g.fill(); });
+const hearts = [];
+function spawnHearts(n, fromWorld) {
+  const k = root.scale.x;
+  for (let i = 0; i < n; i++) {
+    const m = new THREE.Sprite(new THREE.SpriteMaterial({ map: heartTex, transparent: true, depthWrite: false, toneMapped: false }));
+    const base = (0.07 + Math.random() * 0.05) * k;
+    const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(root.quaternion);
+    m.position.copy(fromWorld);
+    m.userData = { vel: new THREE.Vector3((Math.random() - 0.5) * 0.25, 0.35 + Math.random() * 0.3, 0).multiplyScalar(k).addScaledVector(fwd, (0.15 + Math.random() * 0.2) * k),
+                   age: -i * 0.12, life: 2.2 + Math.random() * 0.6, wob: Math.random() * 6, base };
+    m.visible = false; scene.add(m); hearts.push(m);
+  }
+}
+function updateHearts(dt) {
+  for (let i = hearts.length - 1; i >= 0; i--) {
+    const h = hearts[i], u = h.userData; u.age += dt; if (u.age < 0) continue;
+    h.visible = true; const t = u.age / u.life;
+    h.position.addScaledVector(u.vel, dt); h.position.x += Math.sin(u.age * 4 + u.wob) * 0.04 * u.base;
+    h.scale.setScalar(u.base * (0.6 + 0.4 * Math.min(1, u.age / 0.25)));
+    h.material.opacity = t < 0.6 ? 1 : Math.max(0, 1 - (t - 0.6) / 0.4);
+    if (t >= 1) { scene.remove(h); h.material.dispose(); hearts.splice(i, 1); }
+  }
+}
+
+// ============================ load the bear ============================
+let mixer, actions = {}, bones = {}, modelHeight = 1, model;
+new GLTFLoader().load(MODEL_URL, (gltf) => {
+  model = gltf.scene; root.add(model); model.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(model, true); modelHeight = box.max.y - box.min.y;   // precise: uses the skinned shape
+  console.log('[teddy] height', modelHeight.toFixed(3));
+  model.position.y -= box.min.y;
+  model.traverse(o => {
+    if (o.isMesh) o.frustumCulled = false;
+    if (o.isBone) for (const n of ['Head', 'RightArm', 'RightForeArm', 'RightHand', 'Spine2'])
+      if (o.name.endsWith(n) && !bones[n]) bones[n] = o;
+  });
+  mixer = new THREE.AnimationMixer(model);
+  for (const c of gltf.animations) actions[c.name] = mixer.clipAction(c);
+  actions.Wave.setLoop(THREE.LoopPingPong, WAVE_REPEATS); actions.Wave.clampWhenFinished = true; actions.Wave.timeScale = WAVE_SPEED;
+  actions.Kiss.setLoop(THREE.LoopOnce); actions.Kiss.clampWhenFinished = true;
+  actions.Idle.setLoop(THREE.LoopRepeat, Infinity);
+  mixer.addEventListener('finished', (e) => { if ((e.action === actions.Wave && phase === 'wave') || (e.action === actions.Kiss && phase === 'kiss')) runNext(); });
+  model.updateMatrixWorld(true);
+  glueFace();
+  bones.RightHand && bones.RightHand.add(keychain, can);
+  startShow();
+  hint.textContent = 'Tap a button to see each movement · drag to look around';
+  setupAR();
+}, undefined, (e) => { hint.textContent = 'Could not load teddy.glb'; console.error(e); });
+
+// ---- glue face parts onto the real eyes (found by their eye-colour texture swatch) ----
+function glueFace() {
+  let mesh; model.traverse(o => { if (o.isSkinnedMesh && !mesh) mesh = o; });
+  if (!mesh || !bones.Head) return;
+  const pos = mesh.geometry.attributes.position, uv = mesh.geometry.attributes.uv, v = new THREE.Vector3();
+  const L = [], R = [];
+  const hb = new THREE.Vector3(); bones.Head.getWorldPosition(hb); const headY = hb.y - 0.05 * modelHeight;
+  for (let i = 0; i < pos.count; i++) {
+    const u = uv.getX(i), w = uv.getY(i);
+    const isEye = Math.abs(u - 0.875) < 0.003 && (Math.abs(w - 0.21875) < 0.003 || Math.abs(w - 0.78125) < 0.003);
+    if (!isEye) continue;
+    v.fromBufferAttribute(pos, i); mesh.applyBoneTransform(i, v); v.applyMatrix4(mesh.matrixWorld);
+    if (v.y < headY) continue;                                   // only the eyes on the head
+    (v.x < 0 ? R : L).push(v.clone());
+  }
+  if (!L.length || !R.length) { console.warn('[teddy] eyes not found'); return; }
+  const centre = (arr) => { const c = new THREE.Vector3(); arr.forEach(p => c.add(p)); c.divideScalar(arr.length);
+    c.z = Math.max(...arr.map(p => p.z)); return c; };
+  const eL = centre(L), eR = centre(R), d = eL.distanceTo(eR);
+  const headPos = new THREE.Vector3(); bones.Head.getWorldPosition(headPos);
+  const hq = new THREE.Quaternion(); bones.Head.getWorldQuaternion(hq); const hqi = hq.clone().invert();
+  const s = new THREE.Vector3(); bones.Head.getWorldScale(s);
+  const attach = (part, p, w, h, tiltY = 0) => {
+    bones.Head.add(part);
+    const lp = p.clone(); bones.Head.worldToLocal(lp); part.position.copy(lp);
+    const n = new THREE.Vector3(Math.sin(tiltY), 0, Math.cos(tiltY));
+    part.quaternion.copy(hqi.clone().multiply(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), n)));
+    part.scale.set(w / s.x, h / s.y, 1);
+  };
+  attach(eyeL, eL.clone().add(new THREE.Vector3(0, 0, 0.004)), d * 0.72, d * 0.72);
+  attach(eyeR, eR.clone().add(new THREE.Vector3(0, 0, 0.004)), d * 0.72, d * 0.72);
+  attach(blushL, eL.clone().add(new THREE.Vector3(d * 0.28, -d * 0.5, -d * 0.12)), d * 0.6, d * 0.38, 0.45);
+  attach(blushR, eR.clone().add(new THREE.Vector3(-d * 0.28, -d * 0.5, -d * 0.12)), d * 0.6, d * 0.38, -0.45);
+  console.log('[teddy] face glued, eye distance', d.toFixed(3));
+}
+
+// ============================ the show ============================
+let current = null, phase = 'wave', phaseT = 0, kissFired = false, pocketT = 0;
+function go(name) {
+  const next = actions[name], FADE = 0.45;
+  // let everything else fade out naturally (never cut it off)
+  for (const a of Object.values(actions)) if (a !== next && a.enabled && a.getEffectiveWeight() > 0.001) { a.paused = false; a.fadeOut(FADE); }
+  if (next === current && next.isRunning() && name === 'Idle') {
+    // already idling: just keep going, no restart
+  } else {
+    const w = next.isRunning() ? next.getEffectiveWeight() : 0;
+    next.reset(); next.setEffectiveWeight(1); next.play();          // full weight is the target...
+    next._scheduleFading(FADE, w, 1);                                // ...faded in from whatever it showed before
+  }
+  current = next; phase = name.toLowerCase(); phaseT = 0; kissFired = false;
+}
+let queue = [];
+function clearProps() { keychain.visible = false; keychain.userData.burst = false; can.visible = false; can.userData.burst = false; }
+function startAction(name) {
+  clearProps(); setButtons(name);
+  if (name === 'hi') go('Wave');
+  else if (name === 'keychain') startPocket();
+  else if (name === 'kiss') { resetGift(); go('Kiss'); }
+  else if (name === 'water') startWater();
+}
+function runNext() {
+  const n = queue.shift();
+  if (n) startAction(n); else { clearProps(); setButtons(null); go('Idle'); }
+}
+function startShow() { resetGift(); queue = ['keychain', 'kiss']; startAction('hi'); }      // all three in a row
+function startPocket() { go('Idle'); phase = 'pocket'; pocketT = 0; }
+function startWater() { go('Idle'); phase = 'water'; waterT = 0; }
+function setButtons(active) { document.querySelectorAll('#moves button').forEach(b => b.classList.toggle('on', b.dataset.move === active)); }
+document.querySelectorAll('#moves button').forEach(b => b.addEventListener('click', (e) => {
+  e.stopPropagation(); if (!model) return; queue = []; startAction(b.dataset.move);
+}));
+
+// ---- simple 2-bone IK for the right arm (reach into the pocket, then hold the keychain up) ----
+let ikWeight = 0, ikW = 0, turnY = 0; const ikTarget = new THREE.Vector3(), ikT = new THREE.Vector3(), ikInit = { done: false };
+function aimBone(bone, child, targetWorld) {
+  const bp = new THREE.Vector3(), cp = new THREE.Vector3(); bone.getWorldPosition(bp); child.getWorldPosition(cp);
+  const cur = cp.sub(bp).normalize(), want = targetWorld.clone().sub(bp).normalize();
+  const dq = new THREE.Quaternion().setFromUnitVectors(cur, want);
+  const bw = new THREE.Quaternion(); bone.getWorldQuaternion(bw);
+  const pw = new THREE.Quaternion(); bone.parent.getWorldQuaternion(pw);
+  bone.quaternion.copy(pw.invert().multiply(dq.multiply(bw)));
+  bone.updateMatrixWorld(true);
+}
+function solveArm(goalWorld, w) {
+  const { RightArm: A, RightForeArm: F, RightHand: H } = bones; if (!A || !F || !H || w <= 0) return;
+  const a = new THREE.Vector3(), f = new THREE.Vector3(), h = new THREE.Vector3();
+  A.getWorldPosition(a); F.getWorldPosition(f); H.getWorldPosition(h);
+  const goal = h.clone().lerp(goalWorld, w);
+  const l1 = a.distanceTo(f), l2 = f.distanceTo(h);
+  const toGoal = goal.clone().sub(a); const dist = Math.min(toGoal.length(), (l1 + l2) * 0.999);
+  const dir = toGoal.normalize();
+  const cosA = (l1 * l1 + dist * dist - l2 * l2) / (2 * l1 * dist);
+  const pole = new THREE.Vector3(-0.3, -1, -0.6).applyQuaternion(root.quaternion).normalize();   // elbow points down/back/out
+  let bend = pole.clone().sub(dir.clone().multiplyScalar(pole.dot(dir)));
+  if (bend.lengthSq() < 1e-6) bend.set(0, 0, -1).applyQuaternion(root.quaternion);
+  bend.normalize();
+  const elbow = a.clone().addScaledVector(dir, l1 * cosA).addScaledVector(bend, l1 * Math.sqrt(Math.max(0, 1 - cosA * cosA)));
+  aimBone(A, F, elbow); aimBone(F, H, a.clone().addScaledVector(dir, dist));
+}
+function updatePocket(dt) {
+  pocketT += dt;
+  // timeline (s): 0-1.1 reach down to pocket · 1.1-1.5 grab · 1.5-2.7 lift to show · 2.7-5.2 show & swing · 5.2-6 tuck away
+  const T = pocketT, P = POCKET.clone(), S = SHOW.clone();
+  let goal, w;
+  if (T < 1.1) { w = 0.8 * ease(T / 1.1); goal = P; }
+  else if (T < 1.5) { w = 0.8; goal = P; if (!keychain.visible) { keychain.visible = true; keychain.scale.setScalar(0.01); } }
+  else if (T < 2.7) { w = 0.8 + 0.2 * ease((T - 1.5) / 1.2); goal = P.clone().lerp(S, ease((T - 1.5) / 1.2)); }
+  else if (T < 5.2) { w = 1; goal = S.clone().add(new THREE.Vector3(Math.sin(T * 2) * 0.01, Math.sin(T * 3) * 0.008, 0)); }
+  else if (T < 6.0) { w = 1 - ease((T - 5.2) / 0.8); goal = S; }
+  else { w = 0; goal = S; }
+  ikTarget.copy(goal); root.localToWorld(ikTarget.multiplyScalar(modelHeight));
+  ikWeight = w;
+  // keychain pops in, swings while shown, sparkles, then pops away
+  if (keychain.visible) {
+    const sc = T < 1.8 ? Math.min(1, (T - 1.1) / 0.35) : T > 5.6 ? Math.max(0, 1 - (T - 5.6) / 0.3) : 1;
+    keychain.scale.setScalar(Math.max(0.001, easeOutBack(Math.min(1, sc))) * 1.6 / (bones.RightHand ? new THREE.Vector3().setFromMatrixScale(bones.RightHand.matrixWorld).x / root.scale.x : 1));
+    if (T > 2.9 && !keychain.userData.burst) { keychain.userData.burst = true; const p = new THREE.Vector3(); keychain.userData.heart.getWorldPosition(p); spawnHearts(4, p); }
+    if (T > 5.9) { keychain.visible = false; keychain.userData.burst = false; }
+  }
+  if (T > 6.2 && phase === 'pocket') runNext();
+}
+
+function orientKeychain() {
+  if (!keychain.visible) return;
+  const T = pocketT;
+  keychain.parent.updateMatrixWorld(true);
+  // hang straight down from the paw and face the viewer, with a gentle swing
+    const cp = new THREE.Vector3(); viewCam().getWorldPosition(cp);
+    const kp = new THREE.Vector3(); keychain.getWorldPosition(kp);
+    const yaw = Math.atan2(cp.x - kp.x, cp.z - kp.z);
+    const wq = new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.sin(T * 3) * 0.12, yaw, Math.sin(T * 2.2) * 0.18, 'YXZ'));
+    const pq = new THREE.Quaternion(); keychain.parent.getWorldQuaternion(pq);
+    keychain.quaternion.copy(pq.invert().multiply(wq));
+}
+
+// ============================ watering the plant ============================
+function makeCan() {
+  const g = new THREE.Group();
+  const body = new THREE.MeshPhysicalMaterial({ color: 0x9fd8ff, roughness: 0.3, clearcoat: 0.6 });
+  const trim = new THREE.MeshPhysicalMaterial({ color: 0xff8fbf, roughness: 0.35, clearcoat: 0.6 });
+  const tank = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.058, 0.09, 32), body); tank.position.set(0.07, 0, 0);
+  const lidRim = new THREE.Mesh(new THREE.TorusGeometry(0.048, 0.006, 8, 32), trim); lidRim.rotation.x = Math.PI / 2; lidRim.position.set(0.07, 0.045, 0);
+  const band = new THREE.Mesh(new THREE.CylinderGeometry(0.0585, 0.0585, 0.012, 32), trim); band.position.set(0.07, -0.03, 0);
+  const handle = new THREE.Mesh(new THREE.TorusGeometry(0.035, 0.008, 10, 24, Math.PI * 1.2), trim);
+  handle.position.set(0.02, 0.02, 0); handle.rotation.z = Math.PI * 0.4;
+  const spout = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.011, 0.12, 12), body);
+  spout.position.set(0.155, 0.02, 0); spout.rotation.z = -Math.PI / 3.2;
+  const rose = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.01, 0.018, 16), trim);
+  rose.position.set(0.205, 0.052, 0); rose.rotation.z = -Math.PI / 3.2;
+  const heartDot = new THREE.Mesh(new THREE.SphereGeometry(0.012, 12, 8), trim); heartDot.position.set(0.07, 0.005, 0.056); heartDot.scale.z = 0.4;
+  const tip = new THREE.Object3D(); tip.position.set(0.215, 0.058, 0);
+  g.add(tank, lidRim, band, handle, spout, rose, heartDot, tip);
+  g.userData.tip = tip; g.visible = false;
+  return g;
+}
+const can = makeCan();
+const drops = [];
+const dropGeo = new THREE.SphereGeometry(0.009, 10, 8);
+const dropMat = new THREE.MeshStandardMaterial({ color: 0x2ea8ff, emissive: 0x0a4a80, roughness: 0.05, metalness: 0.1, transparent: true, opacity: 0.95 });
+function spawnDrop() {
+  const p = new THREE.Vector3(); can.userData.tip.getWorldPosition(p);
+  const k = root.scale.x;
+  const m = new THREE.Mesh(dropGeo, dropMat); m.position.copy(p); m.scale.setScalar(k * (0.6 + Math.random() * 0.6));
+  m.userData.v = new THREE.Vector3(-0.15 + (Math.random() - 0.5) * 0.12, -0.05, (Math.random() - 0.5) * 0.12).applyQuaternion(root.quaternion).multiplyScalar(k);
+  scene.add(m); drops.push(m);
+}
+function updateDrops(dt) {
+  const soil = new THREE.Vector3(0, 0.19, 0); plant.localToWorld(soil);
+  for (let i = drops.length - 1; i >= 0; i--) {
+    const d = drops[i]; d.userData.v.y -= 2.2 * root.scale.x * dt; d.position.addScaledVector(d.userData.v, dt);
+    if (d.position.y < soil.y) { scene.remove(d); drops.splice(i, 1); }
+  }
+}
+const WATER_HAND = new THREE.Vector3(-0.33, 0.55, 0.16);   // paw position while pouring (model space)
+let waterT = 0;
+function updateWater(dt) {
+  waterT += dt;
+  const T = waterT, bloom = plant.userData.bloom;
+  // 0-0.8 turn toward plant / 0.8-1.8 raise can / 1.8-5 pour (drops, plant wiggles, flower blooms) / 5-5.6 stop / 5.6-6.6 put away, turn back
+  const turn = T < 0.8 ? ease(T / 0.8) : T < 5.6 ? 1 : T < 6.6 ? 1 - ease((T - 5.6) / 1.0) : 0;
+  turnY = -0.6 * turn;
+  if (T > 0.3 && T < 6.2 && !can.visible) can.visible = true;
+  const w = T < 0.8 ? 0 : T < 1.8 ? ease((T - 0.8) / 1.0) : T < 5.6 ? 1 : T < 6.4 ? 1 - ease((T - 5.6) / 0.8) : 0;
+  ikTarget.copy(WATER_HAND).add(new THREE.Vector3(0, Math.sin(T * 5) * 0.006, 0));
+  root.localToWorld(ikTarget.multiplyScalar(modelHeight)); ikWeight = w;
+  can.userData.pour = T < 1.8 ? 0 : T < 2.3 ? ease((T - 1.8) / 0.5) : T < 5.0 ? 1 : T < 5.5 ? 1 - ease((T - 5.0) / 0.5) : 0;
+  can.userData.pop = T < 0.6 ? easeOutBack(Math.max(0, Math.min(1, (T - 0.3) / 0.3))) : T > 5.9 ? Math.max(0, 1 - (T - 5.9) / 0.3) : 1;
+  plant.userData.happy = T > 2 && T < 5.8 ? 1 : 0;
+  if (T > 3.2 && !bloom.visible) { bloom.visible = true; bloom.userData.t = 0; }
+  if (bloom.visible) {
+    bloom.userData.t = (bloom.userData.t || 0) + dt;
+    const bt = bloom.userData.t;
+    bloom.scale.setScalar(Math.max(0.001, easeOutBack(Math.min(1, bt / 1.2))) * (1 + (T > 3.2 && T < 5 ? Math.sin(T * 10) * 0.04 : 0)));
+  }
+  if (T > 4.3 && !can.userData.burst) { can.userData.burst = true; const p = new THREE.Vector3(0, 0.45, 0); plant.localToWorld(p); spawnHearts(5, p); }
+  if (T > 6.8 && phase === 'water') { can.userData.burst = false; can.visible = false; turnY = 0; runNext(); }
+}
+function orientCan() {
+  if (!can.visible) return;
+  can.parent.updateMatrixWorld(true);
+  const cp = new THREE.Vector3(); can.getWorldPosition(cp);
+  const pp = new THREE.Vector3(0, 0.3, 0); plant.localToWorld(pp);
+  const yaw = Math.atan2(-(pp.z - cp.z), pp.x - cp.x);
+  const pour = can.userData.pour || 0;
+  const wq = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, yaw, -0.75 * pour, 'YXZ'));
+  const pq = new THREE.Quaternion(); can.parent.getWorldQuaternion(pq);
+  can.quaternion.copy(pq.invert().multiply(wq));
+  const hs = new THREE.Vector3().setFromMatrixScale(can.parent.matrixWorld).x / root.scale.x;
+  const pop = can.userData.pop === undefined ? 1 : can.userData.pop;
+  can.scale.setScalar(Math.max(0.001, pop) * 1.35 * modelHeight / hs);
+}
+
+// ============================ expressions ============================
+let nextBlink = 1.5, blinkUntil = 0;
+const fade = (m, target, dt, speed = 8) => { m.material.opacity += (target - m.material.opacity) * Math.min(1, dt * speed); };
+function updateFace(t, dt) {
+  let eyes = null, wink = false, blush = 0.4;
+  if (phase === 'wave') { eyes = 'happy'; blush = 0.9; }
+  else if (phase === 'water') { blush = 0.8; if (waterT > 2 && waterT < 5.5) eyes = 'happy'; }
+  else if (phase === 'pocket') { blush = 0.6; if (pocketT > 2.7 && pocketT < 5.2) { eyes = 'happy'; blush = 1; } }
+  else if (phase === 'kiss') {
+    const p = current.time / current.getClip().duration; blush = 1;
+    if (p > KISS_RELEASE - 0.15 && p < KISS_RELEASE + 0.05) eyes = 'closed';
+    else if (p >= KISS_RELEASE + 0.05 && p < KISS_RELEASE + 0.3) wink = true;
+    if (!kissFired && p >= KISS_RELEASE) { kissFired = true; const hp = new THREE.Vector3(); (bones.RightHand || bones.Head).getWorldPosition(hp); spawnHearts(7, hp); dropGift(); }
+  } else {
+    if (t > nextBlink) { blinkUntil = t + 0.14; nextBlink = t + 2 + Math.random() * 2.5; }
+    if (t < blinkUntil) eyes = 'closed';
+    blush = 0.4 + 0.3 * Math.max(0, Math.sin(t * 2));
+  }
+  if (eyes) eyeL.material.map = eyeR.material.map = eyeTex[eyes];
+  if (wink) eyeR.material.map = eyeTex.closed;
+  fade(eyeL, eyes ? 1 : 0, dt, 14); fade(eyeR, (eyes || wink) ? 1 : 0, dt, 14);
+  fade(blushL, blush, dt); fade(blushR, blush, dt);
+}
+
+// ============================ floating 3D buttons (AR) ============================
+const MOVES = [['hi', '\u{1F44B}'], ['keychain', '\u{1F496}'], ['kiss', '\u{1F48B}'], ['water', '\u{1F331}']];
+function bubbleTex(emoji, active) {
+  return canvasTex((g, w, h) => {
+    const r = g.createRadialGradient(w * 0.38, h * 0.32, 4, w / 2, h / 2, w * 0.48);
+    if (active) { r.addColorStop(0, '#ffe0ee'); r.addColorStop(0.6, '#ff9cc4'); r.addColorStop(1, '#f07aaa'); }
+    else { r.addColorStop(0, '#ffffff'); r.addColorStop(0.6, '#ffe6f0'); r.addColorStop(1, '#ffc4da'); }
+    g.fillStyle = r; g.beginPath(); g.arc(w / 2, h / 2, w * 0.46, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = 'rgba(255,255,255,0.9)'; g.lineWidth = w * 0.03; g.stroke();
+    g.fillStyle = 'rgba(255,255,255,0.7)'; g.beginPath(); g.ellipse(w * 0.36, h * 0.27, w * 0.12, h * 0.06, -0.5, 0, Math.PI * 2); g.fill();
+    g.font = `${Math.round(w * 0.46)}px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",sans-serif`;
+    g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(emoji, w / 2, h * 0.54);
+  }, 256, 256);
+}
+const arButtons = new THREE.Group(); arButtons.visible = false; root.add(arButtons);
+const bubbleHits = [];
+MOVES.forEach(([name, emoji], i) => {
+  const b = new THREE.Group();
+  const texOff = bubbleTex(emoji, false), texOn = bubbleTex(emoji, true);
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: texOff, transparent: true, depthWrite: false, toneMapped: false }));
+  spr.scale.setScalar(0.17);
+  const hit = new THREE.Mesh(new THREE.SphereGeometry(0.095, 12, 8), new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }));
+  hit.userData.move = name;
+  b.add(spr, hit); b.position.set(0.95, 0.95 - i * 0.22, 0.05);
+  b.userData = { spr, texOff, texOn, name, base: b.position.y, phase: i * 0.9 };
+  arButtons.add(b); bubbleHits.push(hit);
+});
+function updateArButtons(t) {
+  if (!arButtons.visible) return;
+  const active = document.querySelector('#moves button.on');
+  for (const b of arButtons.children) {
+    const on = active && active.dataset.move === b.userData.name;
+    b.position.y = b.userData.base + Math.sin(t * 1.6 + b.userData.phase) * 0.015;
+    b.userData.spr.material.map = on ? b.userData.texOn : b.userData.texOff;
+    const target = on ? 0.2 : 0.17; b.userData.spr.scale.setScalar(b.userData.spr.scale.x + (target - b.userData.spr.scale.x) * 0.2);
+  }
+}
+function pressBubble(rayCaster) {
+  if (!arButtons.visible) return false;
+  const hit = rayCaster.intersectObjects(bubbleHits, false)[0];
+  if (!hit) return false;
+  const b = hit.object.parent; b.userData.spr.scale.setScalar(0.13);   // little press squish
+  queue = []; startAction(hit.object.userData.move);
+  return true;
+}
+
+// ============================ input / AR ============================
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+renderer.domElement.addEventListener('click', (e) => {
+  if (renderer.xr.isPresenting || !model) return;
+  ndc.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1); ray.setFromCamera(ndc, camera);
+  if (pressBubble(ray)) return;
+  if (ray.intersectObject(model, true).length) startShow();
+});
+let reticle, hitSource = null, placedOnce = false;
+async function setupAR() {
+  if (!navigator.xr || !(await navigator.xr.isSessionSupported('immersive-ar').catch(() => false))) { arBtn.textContent = 'AR not supported on this device'; return; }
+  arBtn.disabled = false;
+  reticle = new THREE.Mesh(new THREE.RingGeometry(0.06, 0.08, 32).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+  reticle.matrixAutoUpdate = false; reticle.visible = false; scene.add(reticle);
+  arBtn.onclick = async () => {
+    const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['hit-test'], optionalFeatures: ['dom-overlay'], domOverlay: { root: document.body } });
+    renderer.xr.setReferenceSpaceType('local'); await renderer.xr.setSession(session);
+    root.visible = false; root.scale.setScalar(AR_HEIGHT / modelHeight);
+    hint.textContent = 'Point at the floor, then tap to place teddy'; arBtn.style.display = 'none';
+    document.getElementById('moves').style.display = 'none';
+    hitSource = await session.requestHitTestSource({ space: await session.requestReferenceSpace('viewer') });
+    session.addEventListener('select', (e) => {
+      // tapped one of the floating buttons?
+      if (root.visible && arButtons.visible) {
+        const pose = e.frame.getPose(e.inputSource.targetRaySpace, renderer.xr.getReferenceSpace());
+        if (pose) {
+          const m = new THREE.Matrix4().fromArray(pose.transform.matrix);
+          ray.ray.origin.setFromMatrixPosition(m);
+          ray.ray.direction.set(0, 0, -1).transformDirection(m);
+          if (pressBubble(ray)) return;
+        }
+      }
+      if (!reticle.visible) return;
+      root.position.setFromMatrixPosition(reticle.matrix);
+      const cam = new THREE.Vector3(); renderer.xr.getCamera().getWorldPosition(cam);
+      root.rotation.y = Math.atan2(cam.x - root.position.x, cam.z - root.position.z);
+      root.visible = true; arButtons.visible = true;
+      if (!placedOnce) { placedOnce = true; startShow(); } else { queue = []; startAction('hi'); }
+      hint.textContent = 'Tap a floating bubble to see each movement \u00b7 tap the floor to move teddy';
+    });
+    session.addEventListener('end', () => { hitSource = null; reticle.visible = false; root.visible = true;
+      root.position.set(0, 0, 0); root.rotation.set(0, 0, 0); root.scale.setScalar(1);
+      arBtn.style.display = ''; document.getElementById('moves').style.display = ''; arButtons.visible = false;
+      hint.textContent = 'Tap a button to see each movement · drag to look around'; });
+  };
+}
+
+// ============================ loop ============================
+let paused = false;   // test hook (window.__teddy.pause)
+renderer.setAnimationLoop((_, frame) => {
+  const dt0 = Math.min(clock.getDelta(), 0.1), dt = paused ? 0 : dt0, t = clock.elapsedTime;
+  if (mixer) {
+    mixer.update(dt);
+    if (phase === 'pocket') updatePocket(dt); else if (phase === 'water') updateWater(dt); else { ikWeight = 0; turnY = 0; }
+    // ease the arm and body toward their targets so switching movements never snaps
+    const kk = Math.min(1, dt * 3.5);
+    if (!ikInit.done || ikW < 0.01) { ikT.copy(ikTarget); ikInit.done = true; } else ikT.lerp(ikTarget, kk);
+    ikW += (ikWeight - ikW) * kk;
+    model.rotation.y += (turnY - model.rotation.y) * Math.min(1, dt * 6);
+    if (ikW > 0.001) { model.updateMatrixWorld(true); solveArm(ikT, ikW); }
+    orientKeychain(); orientCan();
+    if (phase === 'water' && can.visible && (can.userData.pour || 0) > 0.6 && Math.random() < 0.8) spawnDrop();   // after arm + can are posed
+    updateFace(t, dt);
+  }
+  updateHearts(dt); updateGift(dt); updateButterflies(t); updateDrops(dt); updateArButtons(t);
+  const happy = plant.userData.happy || 0; plant.userData.hs = (plant.userData.hs || 0) + (happy - (plant.userData.hs || 0)) * Math.min(1, dt * 3);
+  plant.children.forEach(c => { if (c.userData.sway !== undefined) c.rotation.z = Math.sin(t * (1.2 + plant.userData.hs * 6) + c.userData.sway) * (0.04 + plant.userData.hs * 0.12); });
+  if (frame && hitSource) {
+    const hits = frame.getHitTestResults(hitSource);
+    if (hits.length) { reticle.visible = true; reticle.matrix.fromArray(hits[0].getPose(renderer.xr.getReferenceSpace()).transform.matrix); } else reticle.visible = false;
+  }
+  renderer.render(scene, camera);
+});
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+window.__teddy = { go, startShow, startAction };
+</script>
+</body>
+</html>
