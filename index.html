@@ -31,6 +31,8 @@
   #moves button.on { background: radial-gradient(circle at 35% 30%, #ffd6e7 0%, #ff9cc4 60%, #f07aaa 100%);
                      box-shadow: 0 0 0 4px rgba(255,156,196,.35), 0 6px 16px rgba(232,111,160,.5); transform: scale(1.08); }
 </style>
+<!-- Variant Launch: WebXR floor AR on iPhone (App Clip). Key from launch.variant3d.com -->
+<script src="https://launchar.app/sdk/v1?key=5HWhRka5pmAOrSHH3hMuLz3CYwlRbHcM"></script>
 <script async src="https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.js"></script>
 <script type="importmap">
 { "imports": {
@@ -709,11 +711,19 @@ renderer.domElement.addEventListener('click', (e) => {
 let reticle, hitSource = null, placedOnce = false;
 async function setupAR() {
   const floorOK = !!navigator.xr && await navigator.xr.isSessionSupported('immersive-ar').catch(() => false);
-  if (!floorOK) { arBtn.disabled = true; arBtn.textContent = 'AR works in Chrome on Android'; return; }
+  if (!floorOK) {
+    // iPhone: Variant Launch provides WebXR inside its App Clip viewer
+    const launch = () => { const url = window.VLaunch && VLaunch.getLaunchUrl
+        ? VLaunch.getLaunchUrl(location.origin + location.pathname + '?autoar=1') : null;
+      if (url) location.href = url; else hint.textContent = 'AR is getting ready, please tap again in a moment'; };
+    arBtn.disabled = false; arBtn.textContent = 'Start AR'; arBtn.onclick = launch;
+    window.addEventListener('vlaunch-initialized', () => { arBtn.disabled = false; });
+    return;
+  }
   reticle = new THREE.Mesh(new THREE.RingGeometry(0.06, 0.08, 32).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffffff }));
   reticle.matrixAutoUpdate = false; reticle.visible = false; scene.add(reticle);
-  arBtn.onclick = async () => {
-    const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['hit-test'], optionalFeatures: ['dom-overlay'], domOverlay: { root: document.body } });
+  const enterAR = async () => {
+    const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['local', 'hit-test'], optionalFeatures: ['dom-overlay', 'anchors'], domOverlay: { root: document.body } });
     renderer.xr.setReferenceSpaceType('local'); await renderer.xr.setSession(session);
     root.visible = false; root.scale.setScalar(AR_HEIGHT / modelHeight);
     hint.textContent = 'Point at the floor, then tap to place teddy'; arBtn.style.display = 'none';
@@ -743,6 +753,10 @@ async function setupAR() {
       arBtn.style.display = ''; document.getElementById('moves').style.display = ''; arButtons.visible = false;
       hint.textContent = 'Tap a button to see each movement · drag to look around'; });
   };
+  const tryEnterAR = () => enterAR().catch(e => { console.error(e); hint.textContent = 'AR could not start: ' + (e.message || e); });
+  arBtn.disabled = false; arBtn.textContent = 'Start AR'; arBtn.onclick = tryEnterAR;
+  // opened from the iPhone launcher (Variant Launch viewer): go straight into AR
+  if (new URLSearchParams(location.search).has('autoar')) tryEnterAR();
 }
 
 // ============================ AR on the printed card (MindAR image tracking; works on iPhone + Android) ============================
