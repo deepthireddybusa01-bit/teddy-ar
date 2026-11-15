@@ -8,6 +8,13 @@
   html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; font-family: system-ui, sans-serif; }
   canvas.main { position: fixed; inset: 0; z-index: 0; }
   #hint, #moves, #arBtn, #credit { z-index: 5; }
+  #arBtn { transition: right .35s ease, bottom .35s ease, padding .35s ease, font-size .35s ease; }
+  /* landscape phones (short screens): small corner button so it never covers the bubbles */
+  @media (max-height: 500px) {
+    body #hint { font-size: 13px; top: 6px; }
+    body #arBtn { left: auto; right: 14px; bottom: 14px; transform: none; padding: 10px 18px; font-size: 15px; }
+    body #credit { display: none; }
+  }
   #hint { position: fixed; top: 12px; left: 0; right: 0; text-align: center; color: #8a4a66; font-size: 15px; pointer-events: none; }
   #arBtn { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); padding: 14px 28px;
            border: none; border-radius: 999px; background: #e86fa0; color: #fff; font-size: 17px; font-weight: 600;
@@ -95,7 +102,32 @@ const CREAM = new THREE.Color(0xfdf3e7); scene.background = CREAM;
 const camera = new THREE.PerspectiveCamera(35, innerWidth / innerHeight, 0.01, 50);
 camera.position.set(0.05, 0.7, 3.1);
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0.05, 0.5, 0); controls.update();
+controls.target.set(0.02, 0.4, 0.2); controls.update();
+// ---- responsive framing: always fit teddy + plant + bubble row, portrait or landscape, with a smooth glide ----
+const FRAME = { halfW: 0.7, halfH: 0.8 };             // half-size of the scene to keep in view (teddy units)
+let fitDist = 3.1, fitting = true;
+function computeFit() {
+  const aspect = innerWidth / innerHeight, v = THREE.MathUtils.degToRad(camera.fov) / 2;
+  const h = Math.atan(Math.tan(v) * aspect);
+  fitDist = Math.max(FRAME.halfH / Math.tan(v), FRAME.halfW / Math.tan(h)) + 0.45;
+  fitting = true;
+}
+function onResize() {
+  if (renderer.xr.isPresenting) return;                  // the AR session handles its own rotation
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  computeFit();
+}
+function glideToFit(dt) {
+  if (!fitting || renderer.xr.isPresenting) return;
+  const off = camera.position.clone().sub(controls.target), d = off.length();
+  const step = (fitDist - d) * Math.min(1, dt * 3.5);
+  const nd = d + Math.sign(step) * Math.min(Math.abs(step), 2.5 * dt);   // gentle, capped glide
+  camera.position.copy(controls.target).add(off.setLength(nd));
+  if (Math.abs(fitDist - nd) < 0.002) fitting = false;
+}
+controls.addEventListener('start', () => { fitting = false; });   // the user is zooming/rotating: don't fight them
+computeFit(); { const off = camera.position.clone().sub(controls.target).setLength(fitDist); camera.position.copy(controls.target).add(off); } fitting = false;
 scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
 scene.add(new THREE.HemisphereLight(0xffffff, 0xffd9e3, 0.8));
 const key = new THREE.DirectionalLight(0xfff4ea, 2.0); key.position.set(1.2, 2.5, 2.5); scene.add(key);
@@ -842,6 +874,7 @@ renderer.setAnimationLoop((_, frame) => {
     if (phase === 'water' && can.visible && (can.userData.pour || 0) > 0.6 && Math.random() < 0.8) spawnDrop();   // after arm + can are posed
     updateFace(t, dt);
   }
+  glideToFit(dt);
   updateHearts(dt); updateGift(dt); updateButterflies(t); updateDrops(dt); updateArButtons(t);
   const happy = plant.userData.happy || 0; plant.userData.hs = (plant.userData.hs || 0) + (happy - (plant.userData.hs || 0)) * Math.min(1, dt * 3);
   plant.children.forEach(c => { if (c.userData.sway !== undefined) c.rotation.z = Math.sin(t * (1.2 + plant.userData.hs * 6) + c.userData.sway) * (0.04 + plant.userData.hs * 0.12); });
@@ -851,7 +884,9 @@ renderer.setAnimationLoop((_, frame) => {
   }
   renderer.render(scene, cardAR ? cardAR.camera : camera);
 });
-addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+addEventListener('resize', onResize);
+addEventListener('orientationchange', () => setTimeout(onResize, 150));
+if (window.visualViewport) visualViewport.addEventListener('resize', onResize);
 window.__teddy = { go, startShow, startAction };
 </script>
 </body>
