@@ -21,6 +21,11 @@
   body.card #moves, body.card #arBtn, body.card #cardBtn, body.card #credit { display: none !important; }
   body.card #hint { z-index: 20; color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,.6); }
   #credit { position: fixed; bottom: 4px; right: 8px; font-size: 10px; color: #b08aa0; }
+  /* AR: everything see-through so the real camera view shows behind the teddy */
+  :xr-overlay, html.ar, html.ar body { background: transparent !important; }
+  html.ar canvas.main { visibility: hidden; }
+  html.ar #credit { display: none; }
+  html.ar #hint { color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,.7); }
   #moves { position: fixed; top: 50%; transform: translateY(-50%); right: max(14px, calc(50% - 360px));
            display: flex; flex-direction: column; gap: 14px; }
   #moves button { width: 54px; height: 54px; border: none; border-radius: 50%; font-size: 26px; line-height: 54px; padding: 0;
@@ -724,7 +729,8 @@ async function setupAR() {
   reticle.matrixAutoUpdate = false; reticle.visible = false; scene.add(reticle);
   const enterAR = async () => {
     const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['local', 'hit-test'], optionalFeatures: ['dom-overlay', 'anchors'], domOverlay: { root: document.body } });
-    renderer.xr.setReferenceSpaceType('local'); await renderer.xr.setSession(session);
+    renderer.xr.setReferenceSpaceType('local'); renderer.setClearColor(0x000000, 0); await renderer.xr.setSession(session);
+    document.documentElement.classList.add('ar');
     root.visible = false; root.scale.setScalar(AR_HEIGHT / modelHeight);
     hint.textContent = 'Point at the floor, then tap to place teddy'; arBtn.style.display = 'none';
     document.getElementById('moves').style.display = 'none';
@@ -748,7 +754,7 @@ async function setupAR() {
       if (!placedOnce) { placedOnce = true; startShow(); } else { queue = []; startAction('hi'); }
       hint.textContent = 'Tap a floating bubble to see each movement \u00b7 tap the floor to move teddy';
     });
-    session.addEventListener('end', () => { hitSource = null; reticle.visible = false; root.visible = true;
+    session.addEventListener('end', () => { document.documentElement.classList.remove('ar'); hitSource = null; reticle.visible = false; root.visible = true;
       root.position.set(0, 0, 0); root.rotation.set(0, 0, 0); root.scale.setScalar(1);
       arBtn.style.display = ''; document.getElementById('moves').style.display = ''; arButtons.visible = false;
       hint.textContent = 'Tap a button to see each movement · drag to look around'; });
